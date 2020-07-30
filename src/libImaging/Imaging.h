@@ -98,7 +98,7 @@ struct ImagingMemoryInstance {
     INT32 **image32;    /* Set for 32-bit images (pixelsize=4). */
 
     /* Internals */
-    char **image;       /* Actual raster data. */
+    UINT8 **image;       /* Actual raster data. */
     char *block;        /* Set if data is allocated in a single block. */
     ImagingMemoryBlock *blocks;     /* Memory blocks for pixel storage */
 
