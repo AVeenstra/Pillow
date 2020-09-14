@@ -18,6 +18,18 @@
 #include "Imaging.h"
 
 
+/*@
+    axiomatic BugFixes {
+        axiom eight_bitshift:
+            \forall integer number; number << 8 == number * 0x0100;
+        axiom sixteen_bitshift:
+            \forall integer number; number << 16 == number * 0x010000;
+        axiom twenty_four_bitshift:
+            \forall integer number; number << 24 == number * 0x01000000;
+    }
+  @*/
+
+
 #define    I16(ptr)\
     ((ptr)[0] + ((ptr)[1] << 8))
 
@@ -27,15 +39,13 @@
   @ ensures 0 <= \result <= 0xffff;
   @ assigns \nothing;
   @*/
-int I16_fixed(UINT8 * ptr) {
-    int result = 0;
-
-    result += ptr[1];
-    //@ assert 0 < result <= 0xff;
+unsigned int I16_fixed(UINT8 * ptr) {
+    unsigned int result = ptr[1];
+    //@ assert 0 <= result <= 0xff;
     result <<= 8;
-    //@ assert 0 < result <= 0xff00;
+    //@ assert 0 <= result <= 0xff00;
     result += ptr[0];
-    //@ assert 0 < result <= 0xffff;
+    //@ assert 0 <= result <= 0xffff;
 
     return result;
 }
@@ -46,72 +56,113 @@ int I16_fixed(UINT8 * ptr) {
 /*@
   @ requires \valid(ptr + (0..3));
   @ ensures \result == (ptr[3] << 24) + (ptr[2] << 16) + (ptr[1] << 8) + (ptr[0]);
-  @ ensures INT_MIN <= \result <= INT_MAX;
+  @ ensures 0 <= \result <= 0xffffffff;
   @ assigns \nothing;
   @*/
-int I32_fixed(UINT8 *ptr) {
-    int result = 0;
+unsigned int I32_fixed(UINT8 *ptr) {
+    unsigned int result = 0;
 
-    //@ assert 0 <= ptr[0] <= 0xff;
-    int p0 = ptr[0];
-    //@ assert 0 <= p0 <= 0xff;
-
-    //@ assert 0 <= ptr[1] <= 0xff;
-    int p1 = ptr[1];
-    //@ assert 0 <= p1 <= 0xff;
-
-    //@ assert 0 <= ptr[2] <= 0xff;
-    int p2 = ptr[2];
-    //@ assert 0 <= p2 <= 0xff;
-
-    //@ assert 0 <= ptr[3] <= 0xff;
-    int p3 = ptr[3];
-    //@ assert 0 <= p3 <= 0xff;
-
-    result += p3;
-    //@ assert 0 <= result <= 0xff;
+    result += ptr[3];
     result <<= 8;
     //@ assert 0 <= result <= 0xff00;
-    result += p2;
-    //@ assert 0 <= result <= 0xffff;
+    //@ assert result == (ptr[3] << 8);
+    result += ptr[2];
+    //@ assert result == (ptr[3] << 8) + ptr[2];
     result <<= 8;
     //@ assert 0 <= result <= 0xffff00;
-    result += p1;
-    //@ assert 0 <= result <= 0xffffff;
+    //@ assert result == (ptr[3] << 16) + (ptr[2] << 8);
+    result += ptr[1];
     result <<= 8;
-    //@ assert 0xffffff00 <= result <= 0x80000000 || 0 <= result <= 0x7fffff00;
-    result += p0;
-    //@ assert INT_MIN <= result <= INT_MAX;
+    //@ assert 0 <= result <= 0xffffff00;
+    //@ assert result == (ptr[3] << 24) + (ptr[2] << 16) + (ptr[1] << 8);
+    result += ptr[0];
+    //@ assert 0 <= result <= 0xffffffff;
+    //@ assert result == (ptr[3] << 24) + (ptr[2] << 16) + (ptr[1] << 8) + (ptr[0]);
 
     return result;
+}
+
+/*@
+    requires \valid(im);
+    requires \valid(im->image);
+    requires \valid(im->image + (0..state->ysize - 1));
+    requires \forall integer y; 0 <= y < state->ysize ==> \valid(im->image[y] + (0..state->xsize - 1));
+    requires \valid(state);
+    requires \valid(ptr + (0..bytes - 1));
+
+    requires \separated(im, ptr + (0..bytes - 1));
+    requires \separated(im, state);
+
+    requires \separated(ptr + (0..bytes - 1), im->image + (0..state->ysize - 1));
+    requires \forall integer y; 0 <= y < state->ysize ==> \separated(ptr + (0..bytes - 1), im->image[y] + (0..state->xsize - 1));
+
+    requires \separated(state, im->image + (0..state->ysize - 1));
+    requires \forall integer y; 0 <= y < state->ysize ==> \separated(state, im->image[y] + (0..state->xsize - 1));
+
+    requires 0 < state->ysize <= 0xffff;
+    requires 0 < state->xsize <= 0xffff;
+    requires data == ptr + 6;
+    requires 10 <= bytes;
+    requires (bytes - 6) / state->ysize >= state->xsize;
+    ensures \result == ptr + 6 + state->ysize * state->xsize;
+    assigns im->image[..][..];
+  @*/
+UINT8* copy_chunk(Imaging im, ImagingCodecState state, UINT8 *ptr, size_t bytes, UINT8 *data) {
+    int y;
+    /* COPY chunk */
+    /*@
+        loop invariant 0 <= y <= state->ysize;
+        loop invariant data == ptr + 6 + y * state->xsize;
+        loop invariant \valid(data + (0..(bytes - 1) - (6 + y * state->xsize)));
+        loop assigns data, y, im->image[..][..];
+        loop variant state->ysize - y;
+      @*/
+    for (y = 0; y < state->ysize; y++) {
+        UINT8 *buf_alt = im->image[y];
+        //@ assert state->xsize - 1 <= (bytes - 1) - (6 + y * state->xsize);
+        memcpy(buf_alt, data, state->xsize);
+        data += state->xsize;
+    }
+
+    return data;
 }
 
 
 #define BAIL_ON(condition) {if (condition) {return -1;}}
 
+
 /*@
- requires 16 <= bytes && bytes <= 4096;
- requires (0 < state->ysize && 0 < state->xsize) || state->ysize == state->xsize == 0;
- requires state->ysize * state->xsize < 0x7fffffff - 32;
- requires \valid(buf + (0..bytes - 1));
- requires \valid(im);
- requires \valid(state);
- requires \valid(im->image + (0..state->ysize - 1));
- requires \forall integer y; 0 <= y < state->ysize ==> \valid(im->image[y] + (0..state->xsize - 1));
- requires \separated(buf + (0..bytes - 1), im->image + (0..state->ysize - 1));
- requires \forall integer y; 0 <= y < state->ysize ==> \separated(buf + (0..bytes - 1), im->image[y] + (0..state->xsize - 1));
- ensures bytes < 4 ==> \result == 0;
- ensures bytes >= 4 ==> \result == -1;
- ensures (buf[5] != 0xF1 || buf[4] != 0xFA) ==> \result == -1;
+    requires \valid(im);
+    requires \valid(im->image);
+    requires \valid(im->image + (0..state->ysize - 1));
+    requires \forall integer ys; 0 <= ys < state->ysize ==> \valid(im->image[ys] + (0..state->xsize - 1));
+    requires \valid(state);
+    requires \valid(buf + (0..bytes - 1));
+
+    requires \separated(im, buf + (0..bytes - 1));
+    requires \separated(im, state);
+
+    requires \separated(buf + (0..bytes - 1), im->image + (0..state->ysize - 1));
+    requires \forall integer ys; 0 <= ys < state->ysize ==> \separated(buf + (0..bytes - 1), im->image[ys] + (0..state->xsize - 1));
+
+    requires \separated(state, im->image + (0..state->ysize - 1));
+    requires \forall integer ys; 0 <= ys < state->ysize ==> \separated(state, im->image[ys] + (0..state->xsize - 1));
+
+    requires 16 <= bytes && bytes <= 4096;
+    requires 0 < state->ysize <= 0xffff;
+    requires 0 < state->xsize <= 0xffff;
+    ensures \result == -1;
+    assigns im->image[..][..], state->errcode;
  */
-int
-ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t bytes) {
+int ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t bytes) {
     UINT8 *ptr;
     int framesize;
-    int c, chunks, advance;
+    int c, chunks;
+    unsigned int advance;
     int l, lines;
     int i, j, x = 0, y, ymax;
     Py_ssize_t bytes_original;
+    UINT8 *data;
 
     /* If not even the chunk size is present, we'd better leave */
 
@@ -129,6 +180,8 @@ ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t byt
 
     //@ assert \valid(buf + (0..bytes - 1));
     //@ assert \valid(ptr + (0..bytes - 1));
+    //@ assert \valid(ptr + (0..3));
+    //@ assert 16 <= bytes;
 
     framesize = I32_fixed(ptr);
     if (framesize < I32_fixed(ptr)) {
@@ -152,13 +205,14 @@ ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t byt
 
     /* Process subchunks */
     /*@
-      @ loop assigns ptr, bytes, im->image[0..state->ysize - 1][0..state->xsize - 1];
-      @ loop invariant (\valid(ptr + (0..bytes - 1)));
+      @ loop invariant 0 <= c && c <= chunks;
       @ loop invariant ptr + bytes == buf + bytes_original;
-      @ loop invariant \valid(im->image + (0..state->ysize - 1));
-      @ loop invariant \forall integer y; 0 <= y < state->ysize ==> \valid(im->image[y] + (0..state->xsize - 1));
+      @ loop invariant \valid(ptr + (0..bytes - 1));
+      @ loop invariant \separated(im, ptr + (0..bytes - 1));
       @ loop invariant \separated(ptr + (0..bytes - 1), im->image + (0..state->ysize - 1));
       @ loop invariant \forall integer y; 0 <= y < state->ysize ==> \separated(ptr + (0..bytes - 1), im->image[y] + (0..state->xsize - 1));
+      @ loop assigns ptr, bytes, im->image[..][..], state->errcode, c, advance;
+      @ loop variant chunks - c;
       @*/
     for (c = 0; c < chunks; c++) {
         if (bytes < 10) {
@@ -292,31 +346,9 @@ ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t byt
                 }
                 break;
             case 16:
-                /* COPY chunk */
-            BAIL_ON(bytes < 6 + state->ysize * state->xsize);
-//                  @ loop assigns y, im->image[0..state->ysize - 1][0..state->xsize - 1];
-                /*@
-                  @ loop invariant data == ptr + 6 + y * state->xsize;
-                  @ loop invariant bytes >= 6 + state->ysize * state->xsize;
-                  @ loop invariant ptr + bytes == buf + bytes_original;
-                  @ loop invariant \valid(ptr + (0..bytes - 1));
-                  @ loop invariant \valid(im->image + (0..state->ysize - 1));
-                  @ loop invariant \valid(data + (0..(bytes - 1 - (6 + y * state->xsize))));
-                  @ loop invariant \forall integer ys; 0 <= ys < state->ysize ==> \valid(im->image[ys] + (0..state->xsize - 1));
-                  @ loop invariant \separated(ptr + (0..bytes - 1), im->image + (0..state->ysize - 1));
-                  @ loop invariant \forall integer y; 0 <= y < state->ysize ==> \separated(ptr + (0..bytes - 1), im->image[y] + (0..state->xsize - 1));
-                  @ loop invariant y < state->ysize ==> \valid(data + (0..state->xsize - 1));
-                  @ loop invariant 0 <= y < state->ysize;
-                  @*/
-                for (y = 0; y < state->ysize; y++) {
-                    UINT8 *buf_alt = im->image[y];
-                    //@assert \valid(buf_alt + (0..state->xsize - 1));
-                    //@assert \valid(data + (0..state->xsize - 1));
-                    //@assert \separated(buf_alt + (0..state->xsize - 1), data + (0..state->xsize - 1));
-                    //@assert \separated((char *)((void *)buf_alt) + (0 .. (unsigned int)state->xsize - 1), (char *)((void const *)data) + (0 .. (unsigned int)state->xsize - 1));
-//                    memcpy(buf_alt, data, state->xsize);
-                    data += state->xsize;
-                }
+                BAIL_ON((bytes - 6) / state->ysize < state->xsize);
+
+                data = copy_chunk(im, state, ptr, bytes, data);
                 break;
             case 18:
                 /* PSTAMP chunk */
@@ -328,11 +360,13 @@ ImagingFliDecode(Imaging im, ImagingCodecState state, UINT8 *buf, Py_ssize_t byt
                 return -1;
         }
         advance = I32_fixed(ptr);
-        BAIL_ON(advance < 6 || bytes < advance);
+        BAIL_ON(advance < 6 || advance > 0x7fffffff || bytes < advance);
         //@ assert advance <= bytes;
         //@ assert advance >= 6;
         ptr += advance;
         bytes -= advance;
+
+        BAIL_ON(ptr < data);
     }
 
     return -1; /* end of frame */
